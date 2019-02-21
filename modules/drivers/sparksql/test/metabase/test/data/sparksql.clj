@@ -7,6 +7,7 @@
              [helpers :as h]]
             [metabase.driver.hive-like :as hive-like]
             [metabase.driver.sql.query-processor :as sql.qp]
+            [metabase.driver.sql.util.unprepare :as unprepare]
             [metabase.test.data
              [interface :as tx]
              [sql :as sql.tx]
@@ -61,11 +62,12 @@
                         (sql.qp/->honeysql driver value)))
         hsql-form   (-> (h/insert-into (prepare-key table-name))
                         (h/values values))
-        sql+args    (hive-like/unprepare
+        sql+args    (unprepare/unprepare
+                     driver
                      (hx/unescape-dots (binding [hformat/*subquery?* false]
                                          (hsql/format hsql-form
-                                                      :quoting             (sql.qp/quote-style driver)
-                                                      :allow-dashed-names? false))))]
+                                           :quoting             (sql.qp/quote-style driver)
+                                           :allow-dashed-names? false))))]
     (with-open [conn (jdbc/get-connection spec)]
       (try
         (.setAutoCommit conn false)
