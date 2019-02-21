@@ -12,6 +12,7 @@
             [metabase.metabot.slack :as metabot.slack]
             [metabase.models
              [card :refer [Card]]
+             [collection :as collection]
              [interface :as mi]
              [permissions :refer [Permissions]]
              [permissions-group :as perms-group]]
@@ -23,9 +24,19 @@
 ;;; ----------------------------------------------------- Perms ------------------------------------------------------
 
 (defn- metabot-permissions
-  "Return the set of permissions granted to the MetaBot."
+  "Return the set of permissions granted to the MetaBot.
+
+  MetaBot can only interact with Cards, and Cards are always in a collection; thus any non-collection perms are legacy
+  and irrelevant."
   []
-  (db/select-field :object Permissions, :group_id (u/get-id (perms-group/metabot))))
+  (db/select-field :object Permissions
+    :group_id (u/get-id (perms-group/metabot))
+    :object   [:like "/collection/%"]))
+
+(defn- metabot-visibile-collection-ids
+  "Set of visibile collection IDs, including `nil` if the MetaBot can see the Root Collection."
+  []
+  (collection/permissions-set->visible-collection-ids (metabot-permissions)))
 
 (defn- do-with-metabot-permissions [f]
   (binding [*current-user-permissions-set* (delay (metabot-permissions))]
@@ -93,12 +104,33 @@
   (apply str (interpose "\n" (for [{id :id, card-name :name} cards]
                                (format "%d.  <%s|\"%s\">" id (urls/card-url id) card-name)))))
 
+(defn- honeysql-or [& clauses]
+  (apply
+   (fn
+     ([] nil)
+     ([clause] clause)
+     ([clause & more] (into [:or clause] more)))
+   (filter some? clauses)))
+
 (defn- list-cards []
   (filter-metabot-readable
-   (db/select [Card :id :name :dataset_query :collection_id]
-     :archived false
-     {:order-by [[:id :desc]]
-      :limit    20})))
+   (let [collection-ids                  (metabot-visible-collection-ids)
+         root-collection-perms?          (contains? collection-ids nil)
+         other-visible-collection-ids    (filter some? collection-ids)
+
+         root-collection-filter-clause   (when root-collection-perms?
+                                           [:= :collection_id nil])
+         other-collections-filter-clause (when (seq other-visible-collection-ids)
+                                           [:in :collection_id other-visible-collection-ids])
+         collections-filter-clause (cond
+                                     )]
+     (db/select [Card :id :name :dataset_query :collection_id]
+       {:order-by [[:id :desc]]
+        :limit    20
+        :where    [:and
+                   [:= :archived false]
+                   (collection/visibile-collection-ids->honeysql-filter-clause
+                    (metabot-visible-collection-ids))]}))))
 
 (defmethod command :list [& _]
   (let [cards (list-cards)]

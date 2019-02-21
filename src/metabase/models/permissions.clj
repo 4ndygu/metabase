@@ -38,25 +38,22 @@
    prevent accidental tragedy, but you can enable it here when creating the default entry for `Admin`."
   false)
 
-(def segmented-perm-regex
-  "Regex that matches a segmented permission"
-  #"^/db/(\d+)/schema/([^\\/]*)/table/(\d+)/query/segmented/$")
 
 ;;; --------------------------------------------------- Validation ---------------------------------------------------
 
 (def ^:private ^:const valid-object-path-patterns
-  [#"^/db/(\d+)/$"                                    ; permissions for the entire DB -- native and all schemas
-   #"^/db/(\d+)/native/$"                             ; permissions to create new native queries for the DB
-   #"^/db/(\d+)/schema/$"                             ; permissions for all schemas in the DB
-   #"^/db/(\d+)/schema/([^/]*)/$"                   ; permissions for a specific schema
-   #"^/db/(\d+)/schema/([^/]*)/table/(\d+)/$"       ; FULL permissions for a specific table
-   #"^/db/(\d+)/schema/([^/]*)/table/(\d+)/read/$"  ; Permissions to fetch the Metadata for a specific Table
-   #"^/db/(\d+)/schema/([^/]*)/table/(\d+)/query/$" ; Permissions to run any sort of query against a Table
-   segmented-perm-regex                               ; Permissions to run a query against a Table using GTAP
-   #"^/collection/(\d+)/$"                            ; readwrite permissions for a collection
-   #"^/collection/(\d+)/read/$"                       ; read permissions for a collection
-   #"^/collection/root/$"          ; readwrite permissions for the 'Root' Collection (things with `nil` collection_id)
-   #"^/collection/root/read/$"])   ; read permissions for the 'Root' Collection
+  [#"^/db/(\d+)/$"                                              ; permissions for the entire DB -- native and all schemas
+   #"^/db/(\d+)/native/$"                                       ; permissions to create new native queries for the DB
+   #"^/db/(\d+)/schema/$"                                       ; permissions for all schemas in the DB
+   #"^/db/(\d+)/schema/([^/]*)/$"                               ; permissions for a specific schema
+   #"^/db/(\d+)/schema/([^/]*)/table/(\d+)/$"                   ; FULL permissions for a specific table
+   #"^/db/(\d+)/schema/([^/]*)/table/(\d+)/read/$"              ; Permissions to fetch the Metadata for a specific Table
+   #"^/db/(\d+)/schema/([^/]*)/table/(\d+)/query/$"             ; Permissions to run any sort of query against a Table
+   #"^/db/(\d+)/schema/([^\\/]*)/table/(\d+)/query/segmented/$" ; Permissions to run a query against a Table using GTAP
+   #"^/collection/(\d+)/$"                                      ; readwrite permissions for a collection
+   #"^/collection/(\d+)/read/$"                                 ; read permissions for a collection
+   #"^/collection/root/$"                                       ; readwrite permissions for the 'Root' Collection (things with `nil` collection_id)
+   #"^/collection/root/read/$"])                                ; read permissions for the 'Root' Collection
 
 (defn valid-object-path?
   "Does OBJECT-PATH follow a known, allowed format to an *object*?
@@ -95,12 +92,23 @@
     (throw (ui18n/ex-info (tru "Invalid permissions object path: ''{0}''." object)
              {:status-code 400}))))
 
+(defn- assert-valid-metabot-permissions
+  "MetaBot permissions can only be created for Collections, since MetaBot can only interact with objects that are always
+  in Collections (such as Cards)."
+  [{:keys [object group_id]}]
+  (when (and (= group_id (:id (group/metabot)))
+             (not (str/starts-with? object "/collection/")))
+    (throw (ui18n/ex-info (tru "MetaBot can only have Collection permissions.")
+             {:status-code 400}))))
+
 (defn- assert-valid
   "Check to make sure this PERMISSIONS entry is something that's allowed to be saved (i.e. it has a valid `:object`
    path and it's not for the admin group)."
   [permissions]
-  (assert-not-admin-group permissions)
-  (assert-valid-object permissions))
+  (doseq [f [assert-not-admin-group
+             assert-valid-object
+             assert-valid-metabot-permissions]]
+    (f permissions)))
 
 
 ;;; ------------------------------------------------- Path Util Fns --------------------------------------------------

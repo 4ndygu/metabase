@@ -231,22 +231,65 @@
 
 (def VisibleCollections
   "Includes the possible values for visible collections, either `:all` or a set of ids"
-  (s/cond-pre (s/eq :all) #{su/IntGreaterThanZero}))
+  (s/cond-pre (s/eq :all) #{(s/maybe su/IntGreaterThanZero)}))
 
 (s/defn permissions-set->visible-collection-ids :- VisibleCollections
   "Given a `permissions-set` (presumably those of the current user), return a set of IDs of Collections that the
   permissions set allows you to view. For those with *root* permissions (e.g., an admin), this function will return
-  `:all`, signifying that you are allowed to view all Collections.
+  `:all`, signifying that you are allowed to view all Collections. For *Root Collection* permissions, this returns
+  `nil`, because objects that are \"in\" the Root Collection == objects whose `collection_id` is `nil`.
 
-    (permissions-set->visible-collection-ids #{\"/collection/10/\"}) ; -> #{10}
-    (permissions-set->visible-collection-ids #{\"/\"})               ; -> :all"
+    (permissions-set->visible-collection-ids #{\"/collection/10/\"})   ; -> #{10}
+    (permissions-set->visible-collection-ids #{\"/\"})                 ; -> :all
+    (permissions-set->visible-collection-ids #{\"/collection/root/\"}) ; -> #{nil}
+
+  !!! IMPORTANT NOTE !!!
+
+  Because the result may include `nil` for the Root Collection, or may be `:all`, MAKE SURE YOU HANDLE THOSE
+  SITUATIONS CORRECTLY before using these IDs to make a DB call. Better yet, use
+  `collection-ids->honeysql-filter-clause` to generate appropriate HoneySQL."
   [permissions-set :- #{perms/UserPath}]
   (if (contains? permissions-set "/")
     :all
     (set (for [path  permissions-set
-               :let  [[_ id-str] (re-matches #"/collection/(\d+)/(read/)?" path)]
+               :let  [[_ id-str] (re-matches #"/collection/((?:\d+)|root)/(read/)?" path)]
                :when id-str]
-           (Integer/parseInt id-str)))))
+           (when-not (= id-str "root")
+             (Integer/parseInt id-str))))))
+
+
+(s/defn visibile-collection-ids->honeysql-filter-clause
+  "Generate an appropriate HoneySQL `:where` clause to filter something by visible Collection IDs, such as the ones
+  returned by `permissions-set->visible-collection-ids`. Correctly handles all possible values returned by that
+  function, including `:all` and `nil` Collection IDs (for the Root Collection).
+
+  Guaranteed to always generate a valid HoneySQL form, so this can be used directly in a query without further checks.
+
+    (db/select Card
+      {:where (collection/visibile-collection-ids->honeysql-filter-clause
+               (collection/permissions-set->visible-collection-ids
+                @*current-user-permissions-set*))})"
+  ([collection-ids :- VisibleCollections]
+   (visibile-collection-ids->honeysql-filter-clause :collection_id collection-ids))
+
+  ([collection-id-field :- s/Keyword, collection-ids :- VisibleCollections]
+   (if (= collection-ids :all)
+     true
+     (let [{non-root-ids false, root-id true} (group-by nil? collection-ids)
+           non-root-clause                    (when (seq non-root-ids)
+                                                [:in collection-id-field non-root-ids])
+           root-clause                        (when (seq root-id)
+                                                [:= collection-id-field nil])]
+       (cond
+         (and root-clause non-root-clause)
+         [:or root-clause non-root-clause]
+
+         (or root-clause non-root-clause)
+         (or root-clause non-root-clause)
+
+         :else
+         false)))))
+
 
 (s/defn effective-location-path :- (s/maybe LocationPath)
   "Given a `location-path` and a set of Collection IDs one is allowed to view (obtained from
